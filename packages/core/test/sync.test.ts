@@ -3609,6 +3609,25 @@ test("unions LLM Gateway reasoning efforts in canonical order", () => {
   });
 });
 
+test("keeps curated LLM Gateway toggle controls over the effort union", () => {
+  const curated = [
+    { type: "toggle" as const },
+    { type: "effort" as const, values: ["low", "high", "max"] },
+  ];
+  const model = buildLLMGatewayModel(llmGatewayModel({
+    providers: [
+      { reasoning_efforts: ["none", "low", "high", "max"] },
+      { reasoning_efforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+    ],
+  }), {
+    base_model: "anthropic/claude-fable-5",
+    reasoning: true,
+    reasoning_options: curated,
+  });
+
+  expect(model).toMatchObject({ reasoning_options: curated });
+});
+
 test("keeps non-effort LLM Gateway controls when syncing efforts", () => {
   const model = buildLLMGatewayModel(llmGatewayModel({
     providers: [{ reasoning_efforts: ["none", "low", "high"] }],
@@ -3616,7 +3635,6 @@ test("keeps non-effort LLM Gateway controls when syncing efforts", () => {
     name: "Claude Fable 5",
     reasoning: true,
     reasoning_options: [
-      { type: "toggle" },
       { type: "budget_tokens", min: 1024 },
       { type: "effort", values: ["low"] },
     ],

@@ -757,6 +757,13 @@ function llmGatewayReasoningOptions(
   model: LLMGatewayModel,
   existing: ExistingModel | undefined,
 ): SyncedFullModel["reasoning_options"] {
+  // A curated toggle marks a hand-authored native control set (the upstream's
+  // on/off switch plus its own effort levels). The union of per-mapping
+  // efforts is not a set every route accepts (the gateway forwards efforts
+  // as-is and unsupported values fail upstream), so it never replaces them.
+  if (existing?.reasoning_options?.some((option) => option.type === "toggle")) {
+    return existing.reasoning_options;
+  }
   const advertised = new Set((model.providers ?? []).flatMap((provider) => provider.reasoning_efforts ?? []));
   if (advertised.size === 0) return undefined;
 
@@ -765,9 +772,7 @@ function llmGatewayReasoningOptions(
       - (ReasoningEffortOrder.get(b) ?? Number.MAX_SAFE_INTEGER);
     return order || a.localeCompare(b);
   });
-  const preserved = existing?.reasoning_options?.filter((option) =>
-    option.type !== "effort" && !(option.type === "toggle" && advertised.has("none"))
-  ) ?? [];
+  const preserved = existing?.reasoning_options?.filter((option) => option.type !== "effort") ?? [];
   return [
     ...preserved,
     ReasoningOption.parse({ type: "effort", values: efforts }),
