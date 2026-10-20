@@ -1,11 +1,16 @@
+schema = 2
 base_model = "google/gemma-3-27b-it"
 name = "Gemma 3 27B IT (Nebius)"
-structured_output = true
 
-[cost]
-input = 0.1
-output = 0.3
-cache_read = 0.1
+[capabilities]
+structured_output = true
 
 [limit]
 context = 110_000
+
+[cost.text.input]
+price = 0.1
+cache = { read = 0.1 }
+
+[cost.text.output]
+price = 0.3
