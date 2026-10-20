@@ -11,11 +11,13 @@ import type { ExistingModel, SyncProvider, SyncedFullModel, SyncedModel } from "
 // modality `decisions`) are returned only when requested explicitly.
 // https://openrouter.ai/docs/guides/community/jev
 const API_ENDPOINT = "https://openrouter.ai/api/v1/models?output_modalities=text,decisions";
-// Speech, transcription, embedding and rerank models are listed only when
-// requested by output modality. Image and video models aren't synced yet: their
-// prices live in the per-endpoint image API and the video SKU list.
+// Speech, transcription, embedding, rerank and image models are listed only when
+// requested by output modality. Image prices come from each model's Images API
+// endpoints. Video models aren't synced yet: their prices live in the video SKU list.
 // https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties
-const MEDIA_API_ENDPOINT = "https://openrouter.ai/api/v1/models?output_modalities=speech,transcription,embeddings,rerank";
+const MEDIA_API_ENDPOINT = "https://openrouter.ai/api/v1/models?output_modalities=speech,transcription,embeddings,rerank,image";
+// https://openrouter.ai/docs/guides/overview/multimodal/image-generation#per-endpoint-records
+const IMAGE_ENDPOINTS_URL = (id: string) => `https://openrouter.ai/api/v1/images/models/${id}/endpoints`;
 const MODELS_DIR = path.join(import.meta.dirname, "..", "..", "..", "..", "..", "models");
 const modelMetadataByID = new Map<string, Record<string, unknown>>();
 const modelMetadataFilesByProvider = new Map<string, Set<string>>();
@@ -100,6 +102,21 @@ export function openrouterDirsForMetadataLab(metadata: string): string[] {
   return dirs.length > 0 ? dirs : [metadata];
 }
 
+const OpenRouterImageEndpoint = z.object({
+  provider_slug: z.string().optional(),
+  supported_parameters: z.record(z.object({ values: z.array(z.string()).optional() }).passthrough()).optional(),
+  pricing: z.array(z.object({
+    billable: z.string(),
+    unit: z.string(),
+    cost_usd: z.number(),
+    variant: z.string().optional(),
+  })),
+});
+
+export const OpenRouterImageEndpoints = z.object({
+  endpoints: z.array(OpenRouterImageEndpoint),
+});
+
 export const OpenRouterModel = z.object({
   id: z.string(),
   name: z.string(),
@@ -133,6 +150,8 @@ export const OpenRouterModel = z.object({
     max_completion_tokens: z.number().nullable(),
   }),
   supported_parameters: z.array(z.string()),
+  // Images API endpoint records, attached by fetchModels for image models.
+  image_endpoints: z.array(OpenRouterImageEndpoint).optional(),
   reasoning: z
     .object({
       mandatory: z.boolean(),
@@ -160,17 +179,23 @@ export const openrouter = {
     const headers = process.env.OPENROUTER_API_KEY
       ? { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }
       : undefined;
+    const get = async (url: string) => {
+      const response = await fetch(url, { headers });
+      if (!response.ok) {
+        throw new Error(`OpenRouter request failed: ${response.status} ${response.statusText}`);
+      }
+      return response.json();
+    };
     const [text, media] = await Promise.all(
-      [API_ENDPOINT, MEDIA_API_ENDPOINT].map(async (url) => {
-        const response = await fetch(url, { headers });
-        if (!response.ok) {
-          throw new Error(`OpenRouter request failed: ${response.status} ${response.statusText}`);
-        }
-        return OpenRouterResponse.parse(await response.json());
-      }),
+      [API_ENDPOINT, MEDIA_API_ENDPOINT].map(async (url) => OpenRouterResponse.parse(await get(url))),
     );
     const ids = new Set(text!.data.map((model) => model.id));
-    return { data: [...text!.data, ...media!.data.filter((model) => !ids.has(model.id))] };
+    // Models that also output text (Gemini image models, routers) come from the text list.
+    const extra = media!.data.filter((model) => !ids.has(model.id) && mediaType(model) !== undefined);
+    await Promise.all(extra.filter((model) => mediaType(model) === "image").map(async (model) => {
+      model.image_endpoints = OpenRouterImageEndpoints.parse(await get(IMAGE_ENDPOINTS_URL(model.id))).endpoints;
+    }));
+    return { data: [...text!.data, ...extra] };
   },
   parseModels(raw) {
     // Temporarily skip batch routes (`*:batch`) — they are not catalog targets.
@@ -223,16 +248,17 @@ function isDecisionModel(model: OpenRouterModel) {
 }
 
 // ---------------------------------------------------------------------------
-// Speech, transcription, embedding and rerank models (v2-only files)
+// Speech, transcription, embedding, rerank and image models (v2-only files)
 // ---------------------------------------------------------------------------
 
-type MediaType = "speech" | "transcription" | "embedding" | "reranking";
+type MediaType = "speech" | "transcription" | "embedding" | "reranking" | "image";
 
 const MEDIA_TYPES: Record<string, MediaType> = {
   speech: "speech",
   transcription: "transcription",
   embeddings: "embedding",
   rerank: "reranking",
+  image: "image",
 };
 
 const BASE_URL = "https://openrouter.ai/api/v1";
@@ -245,11 +271,14 @@ const BASE_URL = "https://openrouter.ai/api/v1";
 // https://openrouter.ai/docs/api/api-reference/stt/create-transcription (POST /audio/transcriptions)
 // https://openrouter.ai/docs/api/api-reference/embeddings/submit-an-embedding-request (POST /embeddings)
 // https://openrouter.ai/docs/api/api-reference/rerank/submit-a-rerank-request (POST /rerank)
+// https://openrouter.ai/docs/guides/overview/multimodal/image-generation (POST /images; the OpenRouter
+// AI SDK provider's imageModel)
 const MEDIA_APIS: Record<MediaType, { protocol: string; aisdk?: string }> = {
   speech: { protocol: "speech", aisdk: "@ai-sdk/openai" },
   transcription: { protocol: "transcriptions", aisdk: "@ai-sdk/openai" },
   embedding: { protocol: "embeddings", aisdk: "@openrouter/ai-sdk-provider" },
   reranking: { protocol: "rerank" },
+  image: { protocol: "images", aisdk: "@openrouter/ai-sdk-provider" },
 };
 
 const MEDIA_HEADERS: Record<MediaType, string> = {
@@ -275,6 +304,14 @@ const MEDIA_HEADERS: Record<MediaType, string> = {
     "# and per-token prices), so only free routes get a price.",
     "# https://openrouter.ai/docs/api/api-reference/rerank/submit-a-rerank-request",
   ].join("\n"),
+  image: [
+    "# Synced from https://openrouter.ai/api/v1/models?output_modalities=image. Prices are the Images API",
+    "# endpoint pricing lines (/api/v1/images/models/{id}/endpoints): per image, per megapixel or per token.",
+    "# Resolution and quality tiers are overrides on the first line; a request that omits them is billed at",
+    "# the provider's default tier. No [cost] when a price has no CostV2 form (per-request or font fees,",
+    "# unlisted or per-job pricing).",
+    "# https://openrouter.ai/docs/guides/overview/multimodal/image-generation",
+  ].join("\n"),
 };
 
 // MIME types per OpenRouter's docs.
@@ -297,6 +334,7 @@ const MEDIA_DESCRIPTIONS: Record<MediaType, string> = {
   transcription: "Speech-to-text model",
   embedding: "Text embedding model",
   reranking: "Reranking model",
+  image: "Image generation model",
 };
 
 // OpenRouter IDs whose lab file has another name. Matching otherwise compares
@@ -314,6 +352,11 @@ const MEDIA_BASE_MODEL_OVERRIDES: Record<string, string> = {
   // of life on 2026-10-02 and is served by 2.0 (https://docs.x.ai/developers/release-notes).
   "x-ai/grok-voice-tts-1.0": "xai/grok-tts",
   "x-ai/grok-stt-1.0": "xai/grok-voice-transcribe-2.0",
+  // Krea serves Krea 3 on OpenRouter as K3 Edit (https://www.krea.ai/blog/introducing-krea-3).
+  "krea/k3-edit": "krea/krea-3",
+  "meta/muse-image": "meta/muse-image-1.0",
+  "qwen/qwen-image-3": "alibaba/qwen-image-3.0",
+  "qwen/qwen-image-3-pro": "alibaba/qwen-image-3.0-pro",
 };
 
 // Transcription models whose pricing.prompt is per audio hour, not per second.
@@ -323,6 +366,92 @@ const MEDIA_BASE_MODEL_OVERRIDES: Record<string, string> = {
 // https://openrouter.ai/microsoft/mai-transcribe-2
 // https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/mai-transcribe-2-highest-quality-transcription-at-the-fastest-speed-and-lowest-c/4550972
 const HOURLY_TRANSCRIPTION = new Set(["microsoft/mai-transcribe-1.5", "microsoft/mai-transcribe-2"]);
+
+// https://openrouter.ai/docs/guides/overview/multimodal/image-generation (output_format)
+const IMAGE_OUTPUT: Record<string, string> = {
+  png: "image/png",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+};
+
+// Labs whose OpenRouter price lines are a floor: "Pricing is dynamic: cost is finalized per job at
+// completion based on billable processing, so it scales with reasoning effort, resolution, and editing
+// complexity" (https://openrouter.ai/sourceful/riverflow-v2.5-fast). A 1K Riverflow V2.5 Fast image
+// listed at $0.019 was billed $0.0318 (2026-10-20).
+const PER_JOB_IMAGE_PRICING = new Set(["sourceful"]);
+
+// Pricing variants that aren't a resolution or quality tier. Seedream 5.0 Pro lists a plain line and
+// `high_resolution`: a 1K request was billed the plain $0.045 and a 2K request $0.09 (2026-10-20).
+const IMAGE_VARIANT_CONDITIONS: Record<string, Record<string, Record<string, unknown>>> = {
+  "bytedance-seed/seedream-5-0-pro": { high_resolution: { resolution: { equals: "2K" } } },
+};
+
+const IMAGE_BILLABLES: Record<string, ["text" | "image", "input" | "output"]> = {
+  input_text: ["text", "input"],
+  input_image: ["image", "input"],
+  output_image: ["image", "output"],
+};
+
+const IMAGE_UNITS = new Set(["token", "image", "megapixel"]);
+
+// A tier variant as request conditions: `1k`/`1.5k`/`768` are the `resolution` values (1K, 1.5K, 768),
+// and `<quality>_<resolution>` adds `quality`.
+// https://openrouter.ai/docs/guides/overview/multimodal/image-generation#request-parameters
+export function imageVariantCondition(modelID: string, variant: string): Record<string, unknown> | undefined {
+  const special = IMAGE_VARIANT_CONDITIONS[modelID]?.[variant];
+  if (special !== undefined) return special;
+  const resolution = (value: string) =>
+    /^\d+(\.\d+)?k$/.test(value) ? `${value.slice(0, -1)}K` : /^\d+$/.test(value) ? value : undefined;
+  const tier = resolution(variant);
+  if (tier !== undefined) return { resolution: { equals: tier } };
+  const match = /^(low|medium|high)_(.+)$/.exec(variant);
+  const qualityTier = match === null ? undefined : resolution(match[2]!);
+  if (match === null || qualityTier === undefined) return undefined;
+  return { quality: { equals: match[1] }, resolution: { equals: qualityTier } };
+}
+
+// Image prices from the Images API endpoint records. Every line must map to a CostV2 price, or the
+// model gets no cost rather than a partial one.
+export function imageCost(model: OpenRouterModel) {
+  if (PER_JOB_IMAGE_PRICING.has(model.id.split("/")[0]!)) return undefined;
+  const endpoints = (model.image_endpoints ?? []).filter((endpoint) => endpoint.pricing.length > 0);
+  const lines = endpoints[0]?.pricing;
+  if (lines === undefined) return undefined;
+  // Several hosts with different prices can't be one price.
+  if (endpoints.some((endpoint) => JSON.stringify(endpoint.pricing) !== JSON.stringify(lines))) return undefined;
+
+  const groups = new Map<string, typeof lines>();
+  for (const line of lines) groups.set(line.billable, [...(groups.get(line.billable) ?? []), line]);
+  const cost: Record<string, Record<string, unknown>> = {};
+  for (const billable of Object.keys(IMAGE_BILLABLES)) {
+    const group = groups.get(billable);
+    if (group === undefined) continue;
+    groups.delete(billable);
+    const unit = group[0]!.unit;
+    if (!IMAGE_UNITS.has(unit) || group.some((line) => line.unit !== unit)) return undefined;
+    const value = (usd: number) => unit === "token" ? price(String(usd))! : roundPrice(usd);
+    const base = group.find((line) => line.variant === undefined) ?? group[0]!;
+    const overrides = [];
+    for (const line of group) {
+      if (line === base || value(line.cost_usd) === value(base.cost_usd)) continue;
+      const when = line.variant === undefined ? undefined : imageVariantCondition(model.id, line.variant);
+      if (when === undefined) return undefined;
+      overrides.push({ when, price: value(line.cost_usd) });
+    }
+    const [modality, direction] = IMAGE_BILLABLES[billable]!;
+    cost[modality] = {
+      ...cost[modality],
+      [direction]: {
+        ...(unit === "token" ? {} : { unit }),
+        price: value(base.cost_usd),
+        ...(overrides.length > 0 ? { overrides } : {}),
+      },
+    };
+  }
+  // Reference, font or per-request fees have no CostV2 price.
+  return groups.size === 0 ? cost : undefined;
+}
 
 export function mediaType(model: OpenRouterModel): MediaType | undefined {
   const [output, ...rest] = model.architecture.output_modalities;
@@ -409,7 +538,7 @@ export function buildOpenRouterMediaModel(
     };
     doc.limit = {
       context,
-      output: type === "embedding" || type === "reranking"
+      output: type === "embedding" || type === "reranking" || type === "image"
         ? 0
         : model.top_provider.max_completion_tokens ?? 0,
     };
@@ -471,11 +600,23 @@ function mediaModalities(model: OpenRouterModel, type: MediaType) {
         input: [...new Set(model.architecture.input_modalities.flatMap((value) => MIME_INPUT[value] ?? []))],
         output: [type],
       };
+    case "image": {
+      // The endpoint's output_format values, else PNG ("media_type ... including image/png").
+      const formats = (model.image_endpoints ?? [])
+        .flatMap((endpoint) => endpoint.supported_parameters?.output_format?.values ?? [])
+        .map((value) => IMAGE_OUTPUT[value])
+        .filter((value): value is string => value !== undefined);
+      return {
+        input: [...new Set(model.architecture.input_modalities.flatMap((value) => MIME_INPUT[value] ?? []))],
+        output: formats.length > 0 ? [...new Set(formats)] : ["image/png"],
+      };
+    }
   }
 }
 
 // Prices per CostV2 unit: per 1M tokens or characters, per second otherwise.
 export function mediaCost(model: OpenRouterModel, type: MediaType) {
+  if (type === "image") return imageCost(model);
   const free = model.id.endsWith(":free");
   const prompt = Number(model.pricing.prompt);
   const completion = Number(model.pricing.completion);

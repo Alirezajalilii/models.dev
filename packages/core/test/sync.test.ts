@@ -5454,6 +5454,153 @@ test("OpenRouter transcription routes on chat labs take the endpoint's capabilit
   expect(doc.capabilities).not.toHaveProperty("temperature");
 });
 
+function openRouterImageModel(
+  pricing: NonNullable<OpenRouterModel["image_endpoints"]>[number]["pricing"],
+  overrides: Partial<OpenRouterModel> = {},
+): OpenRouterModel {
+  return openRouterMediaModel({
+    id: "examplelab/painter-1",
+    name: "Example Lab: Painter 1",
+    architecture: { input_modalities: ["text", "image"], output_modalities: ["image"] },
+    pricing: { prompt: "0", completion: "0" },
+    image_endpoints: [{ provider_slug: "examplelab", pricing }],
+    ...overrides,
+  });
+}
+
+test("maps OpenRouter image-only models to the image type", () => {
+  const output = (value: string[]) =>
+    mediaType(openRouterMediaModel({ architecture: { input_modalities: ["text"], output_modalities: value } }));
+
+  expect(output(["image"])).toBe("image");
+  // Image and text output is a chat model (Gemini image models), synced from the text list.
+  expect(output(["image", "text"])).toBeUndefined();
+});
+
+test("prices OpenRouter image models per image with resolution and quality overrides", () => {
+  // Plain per-image price.
+  expect(mediaCost(openRouterImageModel([{ billable: "output_image", unit: "image", cost_usd: 0.04 }]), "image")).toEqual({
+    image: { output: { unit: "image", price: 0.04 } },
+  });
+  // Resolution tiers: the first line is the base, other tiers are overrides; equal tiers collapse.
+  expect(mediaCost(openRouterImageModel([
+    { billable: "input_image", unit: "image", cost_usd: 0.003 },
+    { billable: "output_image", unit: "image", cost_usd: 0.041, variant: "768" },
+    { billable: "output_image", unit: "image", cost_usd: 0.048, variant: "1k" },
+    { billable: "output_image", unit: "image", cost_usd: 0.07, variant: "1.5k" },
+    { billable: "output_image", unit: "image", cost_usd: 0.041, variant: "2k" },
+  ]), "image")).toEqual({
+    image: {
+      input: { unit: "image", price: 0.003 },
+      output: {
+        unit: "image",
+        price: 0.041,
+        overrides: [
+          { when: { resolution: { equals: "1K" } }, price: 0.048 },
+          { when: { resolution: { equals: "1.5K" } }, price: 0.07 },
+        ],
+      },
+    },
+  });
+  // Quality and resolution together.
+  expect(mediaCost(openRouterImageModel([
+    { billable: "output_image", unit: "image", cost_usd: 0.04, variant: "low_1k" },
+    { billable: "output_image", unit: "image", cost_usd: 0.08, variant: "medium_2k" },
+  ]), "image")).toEqual({
+    image: {
+      output: {
+        unit: "image",
+        price: 0.04,
+        overrides: [{ when: { quality: { equals: "medium" }, resolution: { equals: "2K" } }, price: 0.08 }],
+      },
+    },
+  });
+  // A plain line with a named tier that was matched to a resolution by a live request.
+  expect(mediaCost(openRouterImageModel([
+    { billable: "output_image", unit: "image", cost_usd: 0.045 },
+    { billable: "output_image", unit: "image", cost_usd: 0.09, variant: "high_resolution" },
+  ], { id: "bytedance-seed/seedream-5-0-pro" }), "image")).toEqual({
+    image: {
+      output: { unit: "image", price: 0.045, overrides: [{ when: { resolution: { equals: "2K" } }, price: 0.09 }] },
+    },
+  });
+});
+
+test("prices OpenRouter image models per megapixel and per token", () => {
+  expect(mediaCost(openRouterImageModel([
+    { billable: "input_image", unit: "megapixel", cost_usd: 0.06 },
+    { billable: "output_image", unit: "megapixel", cost_usd: 0.06 },
+  ]), "image")).toEqual({
+    image: { input: { unit: "megapixel", price: 0.06 }, output: { unit: "megapixel", price: 0.06 } },
+  });
+  // Token prices are per 1M tokens, with text input listed first.
+  expect(mediaCost(openRouterImageModel([
+    { billable: "input_image", unit: "token", cost_usd: 0.000008 },
+    { billable: "input_text", unit: "token", cost_usd: 0.000005 },
+    { billable: "output_image", unit: "token", cost_usd: 0.00003 },
+  ]), "image")).toEqual({
+    text: { input: { price: 5 } },
+    image: { input: { price: 8 }, output: { price: 30 } },
+  });
+});
+
+test("leaves the cost out of OpenRouter image models with unrepresentable prices", () => {
+  const cost = (pricing: Parameters<typeof openRouterImageModel>[0], overrides: Partial<OpenRouterModel> = {}) =>
+    mediaCost(openRouterImageModel(pricing, overrides), "image");
+  const output = { billable: "output_image", unit: "image", cost_usd: 0.035 };
+
+  // No pricing lines (Krea, Muse Image).
+  expect(cost([])).toBeUndefined();
+  // Per-request style reference fee (Recraft V4 Styles).
+  expect(cost([output, { billable: "input_reference", unit: "request", cost_usd: 0.005 }])).toBeUndefined();
+  // Font and super-resolution reference fees (Riverflow 2.0).
+  expect(cost([output, { billable: "input_font", unit: "image", cost_usd: 0.03 }])).toBeUndefined();
+  // An unknown tier name.
+  expect(cost([output, { ...output, cost_usd: 0.09, variant: "ultra" }])).toBeUndefined();
+  // Per-job pricing where the listed line is only a floor (Sourceful).
+  expect(cost([output], { id: "sourceful/riverflow-v2.5-fast" })).toBeUndefined();
+  // Hosts with different prices.
+  expect(cost([output], {
+    image_endpoints: [
+      { provider_slug: "a", pricing: [output] },
+      { provider_slug: "b", pricing: [{ ...output, cost_usd: 0.04 }] },
+    ],
+  })).toBeUndefined();
+});
+
+test("factors OpenRouter image models onto lab files with the Images API protocol", () => {
+  const doc = buildOpenRouterMediaModel(openRouterImageModel(
+    [{ billable: "output_image", unit: "megapixel", cost_usd: 0.03 }],
+    { id: "black-forest-labs/flux.2-pro", name: "Black Forest Labs: FLUX.2 Pro" },
+  ), "image");
+
+  expect(doc).toEqual({
+    schema: 2,
+    v2_only: true,
+    base_model: "black-forest-labs/flux-2-pro",
+    api: { images: { base_url: "https://openrouter.ai/api/v1", sdk: { aisdk: "@openrouter/ai-sdk-provider" } } },
+    cost: { image: { output: { unit: "megapixel", price: 0.03 } } },
+  });
+
+  // With no lab file: a full definition, outputs from the endpoint's output_format values.
+  const standalone = buildOpenRouterMediaModel(openRouterImageModel([], {
+    image_endpoints: [{
+      provider_slug: "examplelab",
+      supported_parameters: { output_format: { type: "enum", values: ["svg"] } },
+      pricing: [],
+    }],
+  }), "image");
+  expect(standalone).toMatchObject({
+    type: "image",
+    name: "Painter 1",
+    description: "Image generation model",
+    modalities: { input: ["text", "image/png", "image/jpeg", "image/webp", "image/gif"], output: ["image/svg+xml"] },
+    limit: { context: 0, output: 0 },
+    api: { images: { base_url: "https://openrouter.ai/api/v1" } },
+  });
+  expect(standalone).not.toHaveProperty("cost");
+});
+
 test("OpenRouter text models still sync through v1 fields", () => {
   const translated = openrouter.translateModel(openRouterModel(), {
     existing: () => undefined,
