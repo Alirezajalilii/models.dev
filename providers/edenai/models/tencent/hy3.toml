@@ -6,6 +6,7 @@ name = "Hy3 (Tencent)"
 tools = { supported = false }
 reasoning = { supported = true, effort = ["none", "low", "high"] }
 structured_output = false
+effort_updates = false
 
 [cost.text.input]
 price = 0.132

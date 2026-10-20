@@ -3,8 +3,9 @@ base_model = "mistral/mistral-small-24b-instruct-2501"
 name = "Mistral Small 3 (Deep Infra)"
 
 [capabilities]
-tools = { supported = true }
+tools = { supported = true, updates = false }
 structured_output = true
+effort_updates = false
 
 [cost.text.input]
 price = 0.05

@@ -3,7 +3,9 @@ base_model = "google/gemma-3-27b-it"
 name = "Gemma 3 27B IT (Nebius)"
 
 [capabilities]
+tools = { supported = true, updates = false }
 structured_output = true
+effort_updates = false
 
 [limit]
 context = 110_000

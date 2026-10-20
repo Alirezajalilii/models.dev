@@ -6,6 +6,7 @@ name = "Hy4 preview (Tencent)"
 tools = { supported = false }
 reasoning = { supported = true, effort = ["none", "low", "high"] }
 structured_output = false
+effort_updates = false
 
 [limit]
 context = 1_000_000
