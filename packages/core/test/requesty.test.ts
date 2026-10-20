@@ -203,3 +203,19 @@ test("hand-linked routes without a catalog output limit inherit the lab's", () =
   expect(resolveRequestyBaseModel("seed-1.8")).toBeUndefined();
   expect(model).not.toHaveProperty("limit");
 });
+
+test("hand-linked routes keep a curated display name", () => {
+  const model = buildRequestyModel(RequestyModel.parse({
+    id: "inkling-256k",
+    created: Date.parse("2026-07-16") / 1_000,
+    description: "Requesty description",
+    context_window: 262_144,
+    max_output_tokens: 32_768,
+    supports_vision: true,
+    input_price: 0.00000187,
+    output_price: 0.00000468,
+  }), { base_model: "thinkingmachines/inkling", name: "Inkling 256K" });
+
+  expect(resolveRequestyBaseModel("inkling-256k")).toBeUndefined();
+  expect(model).toMatchObject({ base_model: "thinkingmachines/inkling", name: "Inkling 256K" });
+});

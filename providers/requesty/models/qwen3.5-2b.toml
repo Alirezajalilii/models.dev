@@ -1,16 +1,9 @@
-# Modalities: image formats from models/alibaba/qwen3.5-27b.toml (same Qwen3.5 family; no qwen3.5-2b lab file, and Requesty lists no formats)
+# Identity: hugging_face_id Qwen/Qwen3.5-2B on https://router.requesty.ai/v1/models/managed (accessed 2026-10-20); context 262,144 = lab.
+# limit.output 262,144 is the sync's context-window fallback (Requesty reports max_output_tokens = 0); the lab says 81,920.
 # system_updates = true: supports_system_mid_conversation on https://router.requesty.ai/v1/models/managed
 # effort_updates = false, tools.updates = false: Chat Completions takes reasoning_effort per request and has no tool-change message (https://docs.requesty.ai/features/reasoning)
 schema = 2
-name = "qwen3.5-2b"
-description = "Qwen3.5-2B is a compact yet capable model from Alibaba's Qwen3.5 series. It features a 262K token context window, support for 201 languages, thinking/reasoning mode, and tool calling for agentic workflows. A strong choice for prototyping, fine-tuning, and efficient multilingual deployments."
-family = "qwen3.5"
-open_weights = false
-release_date = "2026-03-10"
-
-[modalities]
-input = ["text", "image/bmp", "image/jpeg", "image/png", "image/tiff", "image/webp", "image/heic"]
-output = ["text"]
+base_model = "alibaba/qwen3.5-2b"
 
 [capabilities]
 tools = { supported = true, updates = false }
@@ -20,7 +13,6 @@ system_updates = true
 effort_updates = false
 
 [limit]
-context = 262_144
 output = 262_144
 
 [cost.text.input]

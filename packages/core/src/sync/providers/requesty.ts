@@ -83,7 +83,7 @@ export type RequestyModel = z.infer<typeof RequestyModel>;
 // `retires` date is not synced.
 export function buildRequestyModel(
     model: RequestyModel,
-    existing?: Pick<ExistingModel, "base_model" | "status">,
+    existing?: Pick<ExistingModel, "base_model" | "status" | "name">,
 ): SyncedModel {
     const toolCall = model.supports_tool_calling;
     const structuredOutput = model.supports_output_json_schema;
@@ -107,7 +107,11 @@ export function buildRequestyModel(
         return factorBaseModel(
             canonical,
             {
-                name: regionVariantName(model.id, canonical),
+                // A hand-linked route keeps its curated display name (e.g. a
+                // context-limited variant); factorBaseModel drops it when it
+                // equals the lab's.
+                name: regionVariantName(model.id, canonical)
+                    ?? (resolved === undefined ? existing?.name : undefined),
                 reasoning,
                 reasoning_options: reasoningOptions(reasoning),
                 tool_call: toolCall,
