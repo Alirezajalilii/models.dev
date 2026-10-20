@@ -186,7 +186,31 @@ test("keeps a hand-linked base_model and curated status", () => {
   });
 });
 
-test("hand-linked routes without a catalog output limit inherit the lab's", () => {
+test("routes without a catalog output limit inherit the lab's", () => {
+  const resolved = buildRequestyModel(RequestyModel.parse({
+    id: "qwen3.5-27b",
+    created: Date.parse("2026-02-24") / 1_000,
+    description: "Requesty description",
+    context_window: 262_144,
+    max_output_tokens: 0,
+    input_price: 0.0000003,
+    output_price: 0.0000024,
+  }));
+  expect(resolveRequestyBaseModel("qwen3.5-27b")).toBe("alibaba/qwen3.5-27b");
+  expect(resolved).not.toHaveProperty("limit");
+
+  // The lab's output exceeds the served context: keep the context as the cap.
+  const capped = buildRequestyModel(RequestyModel.parse({
+    id: "mistral-medium-latest",
+    created: Date.parse("2026-01-01") / 1_000,
+    description: "Requesty description",
+    context_window: 131_072,
+    max_output_tokens: 0,
+    input_price: 0.0000004,
+    output_price: 0.000002,
+  }));
+  expect(capped).toMatchObject({ limit: { context: 131_072, output: 131_072 } });
+
   const model = buildRequestyModel(RequestyModel.parse({
     id: "seed-1.8",
     created: Date.parse("2026-05-27") / 1_000,

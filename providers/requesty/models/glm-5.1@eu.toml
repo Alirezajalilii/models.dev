@@ -11,9 +11,6 @@ structured_output = true
 system_updates = true
 effort_updates = false
 
-[limit]
-output = 200_000
-
 [cost.text.input]
 price = 1.4
 cache = { read = 1.4 }

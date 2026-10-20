@@ -7,6 +7,7 @@ import { inferKimiFamily, ModelFamilyValues } from "../../family.js";
 import type { ExistingModel, SyncProvider, SyncedFullModel, SyncedModel } from "../index.js";
 import {
     factorBaseModel,
+    modelMetadata,
     resolveModelMetadataBaseModel,
 } from "./openrouter.js";
 
@@ -99,9 +100,11 @@ export function buildRequestyModel(
     const resolved = resolveRequestyBaseModel(model.id);
     const canonical = resolved ?? existing?.base_model;
     if (canonical !== undefined) {
-        // A hand-linked route whose catalog reports no output limit (0)
-        // inherits the lab's instead of the context-window fallback.
-        const factoredLimit = resolved === undefined && model.max_output_tokens <= 0
+        // A catalog output limit of 0 means unknown: inherit the lab's output
+        // instead of the context-window fallback, unless the lab's exceeds the
+        // context this route serves.
+        const labOutput = (modelMetadata(canonical).limit as { output?: number } | undefined)?.output;
+        const factoredLimit = model.max_output_tokens <= 0 && labOutput !== undefined && labOutput <= context
             ? { context }
             : limit;
         return factorBaseModel(
